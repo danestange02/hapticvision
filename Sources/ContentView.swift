@@ -14,7 +14,7 @@ struct ContentView: View {
 
             Text(vm.statusText)
                 .font(.callout)
-                .accessibilityLabel("Status: " + vm.statusText)
+                .accessibilityLabel("Status: \(vm.statusText)")
 
             HStack {
                 Button(action: {
@@ -34,25 +34,27 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Column Rate: \(String(format: "%.0f", vm.columnsPerSecond)) cols/sec")
-                    .accessibilityLabel("Column rate \(Int(vm.columnsPerSecond)) columns per second")
-                Slider(value: $vm.columnsPerSecond, in: 4...32, step: 1) {
-                    Text("Columns per second")
-                }
-                .accessibilityHint("Adjust how fast columns are scanned and played as haptics.")
+                    .accessibilityLabel("Column rate")
+                    .accessibilityValue("\(Int(vm.columnsPerSecond)) columns per second")
+                Slider(value: $vm.columnsPerSecond, in: 4...32, step: 1)
+                    .accessibilityLabel("Column rate")
+                    .accessibilityValue("\(Int(vm.columnsPerSecond)) columns per second")
+                    .accessibilityHint("Adjust how fast columns are scanned and played as haptics.")
             }
             .padding(.horizontal)
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Grid Size: \(vm.gridSize)x\(vm.gridSize)")
-                    .accessibilityLabel("Grid size \(vm.gridSize) by \(vm.gridSize)")
+                    .accessibilityLabel("Grid size")
+                    .accessibilityValue("\(vm.gridSize) by \(vm.gridSize)")
                 Slider(value: Binding(get: {
                     Double(vm.gridSize)
                 }, set: { newVal in
                     vm.gridSize = Int(newVal)
-                }), in: 8...48, step: 8) {
-                    Text("Grid Size")
-                }
-                .accessibilityHint("Downsample camera to this square grid.")
+                }), in: 8...64, step: 8)
+                    .accessibilityLabel("Grid size")
+                    .accessibilityValue("\(vm.gridSize) by \(vm.gridSize)")
+                    .accessibilityHint("Downsample camera to this square grid.")
             }
             .padding(.horizontal)
 
@@ -66,8 +68,13 @@ struct ContentView: View {
         }
         .padding()
         .onAppear {
-            // Request camera permission early for VoiceOver flow
-            AVCaptureDevice.requestAccess(for: .video) { _ in }
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    if !granted {
+                        vm.statusText = "Camera access denied"
+                    }
+                }
+            }
         }
     }
 }
