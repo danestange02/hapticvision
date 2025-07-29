@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CoreVideo
+import QuartzCore
 
 @MainActor
 final class HapticVisionViewModel: NSObject, ObservableObject, CameraManagerDelegate {
@@ -16,10 +17,11 @@ final class HapticVisionViewModel: NSObject, ObservableObject, CameraManagerDele
     private let camera = CameraManager()
     private let vision = VisionProcessor()
     private var latestPixelBuffer: CVPixelBuffer?
-    private var grid: [[Float]] = []
+    private let bufferLock = NSLock()
+    private var lastProcessedFrame: CMTime?
+    private var cachedGrid: [[Float]]?
     private var columnIndex: Int = 0
-
-    private var timer: Timer?
+    private var displayLink: CADisplayLink?
 
     override init() {
         super.init()
@@ -39,10 +41,10 @@ final class HapticVisionViewModel: NSObject, ObservableObject, CameraManagerDele
         statusText = "Stopped"
     }
 
-    // MARK: - CameraManagerDelegate
     nonisolated func cameraManager(_ manager: CameraManager, didOutput pixelBuffer: CVPixelBuffer) {
-        // Update latest buffer
+        bufferLock.lock()
         latestPixelBuffer = pixelBuffer
+        bufferLock.unlock()
     }
 
     func cameraManager(_ manager: CameraManager, didChangeRunning isRunning: Bool) {
@@ -54,33 +56,45 @@ final class HapticVisionViewModel: NSObject, ObservableObject, CameraManagerDele
         self.statusText = "Error: \(error.localizedDescription)"
     }
 
-    // MARK: - Timer logic
     private func startTimer() {
-        updateTimer()
+        stopTimer()
+        let cps = max(1.0, columnsPerSecond)
+        displayLink = CADisplayLink(target: self, selector: #selector(tick))
+        displayLink?.preferredFramesPerSecond = Int(cps)
+        displayLink?.add(to: .main, forMode: .common)
     }
 
     private func stopTimer() {
-        timer?.invalidate()
-        timer = nil
+        displayLink?.invalidate()
+        displayLink = nil
     }
 
-    private func updateTimer() {
-        timer?.invalidate()
-        let cps = max(1.0, columnsPerSecond)
-        let interval = 1.0 / cps
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            self?.tick()
+    @objc private func tick(_ displayLink: CADisplayLink) {
+        bufferLock.lock()
+        guard let pb = latestPixelBuffer else {
+            bufferLock.unlock()
+            return
         }
-        RunLoop.main.add(timer!, forMode: .common)
-    }
+        bufferLock.unlock()
 
-    private func tick() {
-        guard let pb = latestPixelBuffer else { return }
-        // Downsample to grid
-        let n = max(8, min(64, gridSize))
-        grid = vision.downsample(pb, size: n)
+        if let sampleBuffer = CMSampleBufferCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pb,
+            dataReady: true,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: nil,
+            sampleTiming: nil
+        ) {
+            let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            if lastProcessedFrame != timestamp {
+                let n = max(8, min(64, gridSize))
+                cachedGrid = vision.downsample(pb, size: n)
+                lastProcessedFrame = timestamp
+            }
+        }
 
-        // Wrap column index
+        guard let grid = cachedGrid, !grid.isEmpty else { return }
         let width = grid.first?.count ?? 0
         if width == 0 { return }
         if columnIndex >= width { columnIndex = 0 }
@@ -88,7 +102,6 @@ final class HapticVisionViewModel: NSObject, ObservableObject, CameraManagerDele
         let col = vision.column(from: grid, x: columnIndex)
         columnIndex += 1
 
-        // Play sweep for this column
-        HapticManager.shared.playSweep(intensities: col, totalDuration: max(0.06, 1.0 / columnsPerSecond))
+        HapticManager.shared.playSweep(intensities: col, totalDuration: min(0.12, max(0.04, 0.8 / columnsPerSecond)))
     }
 }
